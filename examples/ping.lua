@@ -1,42 +1,47 @@
--- 引入skynet核心库，这是使用skynet框架的必要步骤
+--===== 集群模式示例(Ping服务) =====
+-- 导入skynet核心库和集群模块
 local skynet = require "skynet"
+local cluster = require "skynet.cluster"
 
--- 定义命令表，用于处理接收到的不同类型的消息
+-- 获取当前节点的名称(通过环境变量)
+local mynode = skynet.getenv("node")
+
+-- 命令处理表，用于处理接收到的不同类型的消息
 local CMD = {}
 
--- start命令处理函数，当收到"start"命令时被调用
--- source: 消息发送方的服务句柄
--- target: 消息参数，这里是另一个ping服务的句柄
-function CMD.start(source, target)
-    -- 向target服务发送"ping"命令，携带参数1作为初始计数值
-    -- 这将启动两个ping服务之间的通信
-    skynet.send(target, "lua", "ping", 1)
-end
-
--- ping命令处理函数，当收到"ping"命令时被调用
--- source: 消息发送方的服务句柄
--- count: 当前的计数值
-function CMD.ping(source, count)
-    -- 获取当前服务的句柄（ID）
+-- 处理接收到的ping消息
+-- @param source: 消息发送者的服务地址
+-- @param source_node: 发送者的节点名称
+-- @param source_srv: 发送者的服务地址/名称
+-- @param count: ping-pong的计数值
+function CMD.ping(source, source_node, source_srv, count)
+    -- 获取当前服务的地址
     local id = skynet.self()
-    -- 输出日志信息，显示当前服务ID和接收到的计数值
+    -- 输出日志，显示接收到的ping消息和计数
     skynet.error("["..id.."] recv ping count="..count)
-    -- 暂停100毫秒，模拟处理时间
+    -- 休眠100个时间单位(10ms)，模拟处理延迟
     skynet.sleep(100)
-    -- 向消息发送方回复"ping"命令，计数值加1
-    -- 这样两个服务会不断地互相发送ping消息，计数值不断增加
-    skynet.send(source, "lua", "ping", count+1)
+    -- 通过集群发送ping消息给源服务，计数值加1
+    -- 这里使用cluster.send而不是skynet.send，因为要跨节点通信
+    cluster.send(source_node, source_srv, "ping", mynode, skynet.self(), count+1)
 end
 
+-- 启动ping-pong通信的处理函数
+-- @param source: 消息发送者的服务地址
+-- @param target_node: 目标节点名称
+-- @param target: 目标服务的名称/地址
+function CMD.start(source, target_node, target)
+    -- 发送第一个ping消息给目标节点的目标服务，初始计数为1
+    cluster.send(target_node, target, "ping", mynode, skynet.self(), 1)
+end
 
--- skynet.start是服务的入口函数，传入一个匿名函数作为服务的主体逻辑
+-- skynet服务的入口函数
 skynet.start(function()
     -- 注册lua类型消息的分发处理函数
-    -- 当服务收到lua类型的消息时，会调用这个函数来处理
     skynet.dispatch("lua", function(session, source, cmd, ...)
-      -- 根据cmd查找对应的处理函数，如果不存在则触发错误
+      -- 根据命令名查找对应的处理函数
       local f = assert(CMD[cmd])
-      -- 调用对应的处理函数，传入消息源和其他参数
-      f(source,...)
+      -- 调用处理函数，传入消息源和其他参数
+      f(source, ...)
     end)
 end)

@@ -1,62 +1,40 @@
--- 引入skynet核心库，这是使用skynet框架的必要步骤
+--===== 集群模式示例(主程序) =====
+-- 导入skynet核心库、集群模块和管理模块
 local skynet = require "skynet"
--- 引入skynet的socket模块，用于网络通信功能
-local socket = require "skynet.socket"
-
--- 定义一个表来存储所有已连接的客户端
--- 使用文件描述符(fd)作为键，这样可以方便地管理和访问客户端
-local clients = {}
-
--- 定义连接处理函数，当有新客户端连接到服务器时会调用此函数
--- fd: 文件描述符，用于标识这个连接
--- addr: 客户端的地址信息，通常是IP:端口格式
-function connect(fd, addr)
-    --启用连接
-    print(fd.." connected addr:"..addr)
-    -- 启用该连接，使其可以接收数据
-    socket.start(fd)
-    
-    -- 将新连接的客户端添加到clients表中
-    -- 这里使用空表作为值，可以在需要时存储客户端相关信息
-    clients[fd] = {}
-    
-    --消息处理循环
-    while true do
-        -- 从连接中读取数据，如果客户端未发送数据则会阻塞等待
-        local readdata = socket.read(fd)
-        
-        --正常接收到数据时
-        if readdata ~= nil then
-            -- 打印接收到的数据
-            print(fd.." recv "..readdata)
-            
-            -- 遍历所有已连接的客户端，将消息广播给所有人
-            -- 这是聊天室的核心功能：一个人发送的消息，所有人都能看到
-            for i, _ in pairs(clients) do --广播
-                socket.write(i, readdata)
-            end
-        --断开连接时
-        else
-            -- 打印关闭信息
-            print(fd.." close ")
-            -- 关闭socket连接，释放资源
-            socket.close(fd)
-            -- 从clients表中移除这个客户端
-            -- 这样就不会再给它发送消息了
-            clients[fd] = nil
-            -- 退出消息处理循环
-            break
-        end
-    end
-end
-    
--- skynet.start是服务的入口函数，传入一个匿名函数作为服务的主体逻辑
+local cluster = require "skynet.cluster"
+require "skynet.manager"  -- 用于支持skynet.name函数
+ 
+-- skynet服务的入口函数
 skynet.start(function()
-    -- 创建一个监听socket，指定监听地址和端口
-    -- "0.0.0.0"表示监听所有网络接口，8888是端口号
-    local listenfd = socket.listen("0.0.0.0", 8888)
+    -- 配置集群节点信息，设置各节点的地址和端口
+    cluster.reload({
+        node1 = "127.0.0.1:7001",  -- 节点1地址
+        node2 = "127.0.0.1:7002"   -- 节点2地址
+    })
     
-    -- 启动监听socket，并设置connect作为新连接的处理函数
-    -- 当有新客户端连接时，skynet会自动调用connect函数处理
-    socket.start(listenfd, connect)
+    -- 获取当前节点的名称(通过环境变量)
+    local mynode = skynet.getenv("node")
+
+    -- 根据节点名称执行不同逻辑
+    if mynode == "node1" then
+        -- 节点1: 打开集群通信端口
+        cluster.open("node1")
+        
+        -- 创建两个ping服务实例
+        local ping1 = skynet.newservice("ping")
+        local ping2 = skynet.newservice("ping")
+        
+        -- 向两个ping服务发送启动命令，让它们与node2上的pong服务通信
+        skynet.send(ping1, "lua", "start", "node2", "pong")
+        skynet.send(ping2, "lua", "start", "node2", "pong")
+    elseif mynode == "node2" then
+        -- 节点2: 打开集群通信端口
+        cluster.open("node2")
+        
+        -- 创建一个ping服务实例
+        local ping3 = skynet.newservice("ping")
+        
+        -- 将该服务命名为"pong"，使得其他节点可以通过名字访问
+        skynet.name("pong", ping3)
+    end
 end)
